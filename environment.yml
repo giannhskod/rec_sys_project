@@ -1,4 +1,4 @@
-name: text_analytics_2
+name: rec_sys_env
 channels:
   - conda-forge
   - defaults
