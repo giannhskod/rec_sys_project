@@ -7,6 +7,9 @@ from definitions import DATA_DIR
 RATINGS_DATASET_PATH = os.path.join(DATA_DIR, "ratings.csv")
 
 
+def get_items_of_category(category = -1, categorized_movies : pd.DataFrame = None):
+    return categorized_movies[categorized_movies['Category'] == category]['Movie Id'].values
+    
 class PreprocessRatingsDataset(object):
     """
 
