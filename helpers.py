@@ -9,6 +9,17 @@ RATINGS_DATASET_PATH = os.path.join(DATA_DIR, "ratings.csv")
 
 def get_items_of_category(category = -1, categorized_movies : pd.DataFrame = None):
     return categorized_movies[categorized_movies['Category'] == category]['Movie Id'].values
+
+def get_suggestion_for_user(user = -1,movies: pd.DataFrame = None, L = 0):
+    return movies.loc[user].sort_values(0,ascending = False).head(L)
+
+def get_suggestion_for_all_users(movies: pd.DataFrame = None, L = 0):
+    users = movies.index.unique()
+    suggestions = dict()
+    for user in users:
+        suggestion = get_suggestion_for_user(user, movies, L)
+        suggestions.update( {user : suggestion} )
+    return suggestions
     
 class PreprocessRatingsDataset(object):
     """
