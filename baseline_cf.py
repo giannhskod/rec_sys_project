@@ -1,11 +1,20 @@
 from math import isnan, sqrt
 
 import numpy as np
+import pandas as pd
 
 from scipy import spatial, stats, sparse
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import KFold
 
+from surprise import KNNWithMeans
+from surprise import Prediction
+from surprise import accuracy
+from surprise import Dataset
+from surprise import Reader
+from surprise.model_selection import train_test_split
+
+# Currently not used
 
 def similarity_item(dataset_df):
     df_shape = dataset_df.shape
@@ -169,3 +178,77 @@ def crossValidation(dataset_df):
         sim_mat_item = sim_item_pearson
 
     return Mat, sim_mat_item
+
+
+def construct_cf_matrix(predictions: [Prediction]):
+    baseline_cf_values = []
+
+    for pred in predictions:
+        baseline_cf_values.append({
+            "movieId": pred.iid,
+            "userId": pred.uid,
+            "rating": pred.est
+        })
+    baseline_cf_df = pd.DataFrame(baseline_cf_values)
+    # pivot ratings into movie features
+    baseline_cf_df_pivot = baseline_cf_df.pivot(
+        index='userId',
+        columns='movieId',
+        values='rating'
+    ).fillna(0)
+    return baseline_cf_df_pivot
+
+
+def calculate_baseline_cf(df: pd.DataFrame, verbose=True, **kwargs):
+    """
+
+    Args:
+        df:
+        verbose:
+        **kwargs:
+
+    Returns:
+
+    """
+    # Load the movielens-100k dataset  UserID::MovieID::Rating::Timestamp
+    # data = Dataset.load_builtin('ml-100k')
+    # A reader is still needed but only the rating_scale param is requiered.
+
+    rating_scale = kwargs.get("rating_scale", (1, 5))
+    important_cols = kwargs.get("important_cols", ["movieId", "userId", "rating"])
+    test_size = kwargs.get("test_size", 0.15)
+    surprise_kwargs = kwargs.get("surprise_kwargs", {
+        "k": 50,
+        "sim_options": {
+            "name": "pearson_baseline",
+            "user_based": False
+        }
+    })
+
+    assert (set(important_cols) < set(df.colums)), "Important cols are not a subset of the Dataframe"
+
+    reader = Reader(rating_scale=rating_scale)
+
+    data = Dataset.load_from_df(df[important_cols], reader)
+    trainset, testset = train_test_split(data, test_size=test_size)
+
+    # Use user_based true/false to switch between user-based or item-based collaborative filtering
+    algo = KNNWithMeans(**surprise_kwargs)
+    algo.fit(trainset)
+
+    # run the trained model against the testset
+    test_pred = algo.test(testset)
+
+    # get RMSE
+    if verbose:
+        print("Item-based Model : Test Set")
+    accuracy.rmse(test_pred, verbose=True)
+
+    # if you wanted to evaluate on the trainset
+    if verbose:
+        print("Item-based Model : Test Set")
+        print("Item-based Model : Training Set")
+    train_pred = algo.test(trainset.build_testset())
+    accuracy.rmse(train_pred)
+
+    return test_pred + train_pred
