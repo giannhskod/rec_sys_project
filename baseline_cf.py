@@ -1,171 +1,137 @@
-from math import isnan, sqrt
+import os
+import pandas as pd
 
-import numpy as np
+from surprise import KNNWithMeans, Prediction, accuracy, Dataset, Reader
+from surprise.model_selection import train_test_split
 
-from scipy import spatial, stats, sparse
-from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
+from definitions import MODELS_DIR
 
-
-def similarity_item(dataset_df):
-    df_shape = dataset_df.shape
-    items = df_shape[1] - 1
-    users = df_shape[0] - 1
-    is_sparse_matrix = isinstance(dataset_df, sparse.csr_matrix)
-
-    # Create IxI similarity matrices
-    item_similarity_cosine = np.zeros((items, items))
-    item_similarity_jaccard = np.zeros((items, items))
-    item_similarity_pearson = np.zeros((items, items))
-    for item1 in range(items):
-        for item2 in range(items):
-            user_col_item1 = dataset_df.getcol(item1).A.novel() if is_sparse_matrix else dataset_df[:, item1]
-            user_col_item2 = dataset_df.getcol(item2).A.novel() if is_sparse_matrix else dataset_df[:, item2]
-            if (np.count_nonzero(user_col_item1)
-                    and np.count_nonzero(user_col_item2)):
-                item_similarity_cosine[item1][item2] = 1 - spatial.distance.cosine(user_col_item1, user_col_item2)
-                item_similarity_jaccard[item1][item2] = 1 - (
-                    spatial.distance.jaccard(
-                        (user_col_item1 > 0.5).astype(int),
-                        (user_col_item2 > 0.5).astype(int)
-                    )
-                )
-                try:
-                    if not isnan(stats.pearsonr(user_col_item1, user_col_item2)[0]):
-                        item_similarity_pearson[item1][item2] = stats.pearsonr(user_col_item1, user_col_item2)[0]
-                    else:
-                        item_similarity_pearson[item1][item2] = 0
-                except:
-                    item_similarity_pearson[item1][item2] = 0
-
-    return item_similarity_cosine, item_similarity_jaccard, item_similarity_pearson
+BASELINE_CF_PICKLE_FILE_NAME = os.path.join(MODELS_DIR, "baseline-cf-pickle")
 
 
-def crossValidation(dataset_df):
-    k_fold = KFold(n_splits=10, shuffle=True)
-    df_shape = dataset_df.shape
-    items = df_shape[1]
-    users = df_shape[0]
+def construct_cf_matrix(predictions: [Prediction]):
+    """
+    Constructs the Collaborative Filtering matrix based on the given "surprise.Prediction" list.
+    The matrix is generated from the "estimated" values
+    Args:
+        predictions (list): A list of surprise.Prediction items.
 
-    # U X I matrix probably is not needed
-    Mat = np.zeros((users,items))
-    for e in dataset_df:
-        Mat[e[0]-1][e[1]-1] = e[2]
+    Returns (pandas.DataFrame): Is the CF DataFrame with 'userId' as index 'movieId' as columns and estimated
+                                ratings as values.
+    """
+    baseline_cf_values = []
 
-    sim_item_cosine, sim_item_jaccard, sim_item_pearson = similarity_item(Mat)
-    #sim_item_cosine, sim_item_jaccard, sim_item_pearson = np.random.rand(items,items), np.random.rand(items,items), np.random.rand(items,items)
+    for pred in predictions:
+        baseline_cf_values.append(
+            {"movieId": pred.iid, "userId": pred.uid, "rating": pred.est}
+        )
+    baseline_cf_df = pd.DataFrame(baseline_cf_values)
 
-    '''sim_item_cosine = np.zeros((items,items))
-    sim_item_jaccard = np.zeros((items,items))
-    sim_item_pearson = np.zeros((items,items))
-    f_sim_i = open("sim_item_based.txt", "r")
-    for row in f_sim_i:
-        r = row.strip().split(',')
-        sim_item_cosine[int(r[0])][int(r[1])] = float(r[2])
-        sim_item_jaccard[int(r[0])][int(r[1])] = float(r[3])
-        sim_item_pearson[int(r[0])][int(r[1])] = float(r[4])
-    f_sim_i.close()'''
+    # pivot ratings into movie features
+    baseline_cf_df_pivot = baseline_cf_df.pivot(
+        index="userId", columns="movieId", values="rating"
+    ).fillna(0)
+    return baseline_cf_df_pivot
 
-    rmse_cosine = []
-    rmse_jaccard = []
-    rmse_pearson = []
 
-    for train_indices, test_indices in k_fold.split(dataset_df):
-        train = [dataset_df[i] for i in train_indices]
-        test = [dataset_df[i] for i in test_indices]
+def calculate_baseline_cf(df: pd.DataFrame, verbose=True, **kwargs):
+    """
+    Function that given a User - Item - Rating DataFrame and a set of dynamic arguments,
+    it create a prediction Algorithm model using KNN neighborhood method.
+    For the Model construction and the prediction, we use the 'surprise' scikit and more
+    specifically the KNNwithMeans object, which is initialized based on the given arguments.
 
-        M = np.zeros((users,items))
+    Args:
+        df (pandas.Dataframe): The User - Item - Rating DataFrame
+        verbose (bool): If true the print execution info
+        **kwargs (dict): Dynamic arguments that will be used from the Prediction Model initialization
+                         and the data management.
 
-        for e in train:
-            M[e[0]-1][e[1]-1] = e[2]
+    Returns (surprise.Prediction): A list of the predicted values.
 
-        true_rate = []
-        pred_rate_cosine = []
-        pred_rate_jaccard = []
-        pred_rate_pearson = []
+    """
+    rating_scale = kwargs.get("rating_scale", (1, 5))
+    important_cols = kwargs.get("important_cols", ["userId", "movieId", "rating"])
+    test_size = kwargs.get("test_size", 0.15)
+    surprise_kwargs = kwargs.get(
+        "surprise_kwargs",
+        {"k": 50, "sim_options": {"name": "pearson_baseline", "user_based": False}},
+    )
+    # Check that the columns are
+    assert set(important_cols) <= set(
+        df.columns
+    ), "Important cols are not a subset of the DataFrame"
 
-        for e in test:
-            user = e[0]
-            item = e[1]
-            true_rate.append(e[2])
+    reader = Reader(rating_scale=rating_scale)
 
-            pred_cosine = 3.0
-            pred_jaccard = 3.0
-            pred_pearson = 3.0
+    data = Dataset.load_from_df(df[important_cols], reader)
+    trainset, testset = train_test_split(data, test_size=test_size)
 
-            #item-based
-            if np.count_nonzero(M[:,item-1]):
-                sim_cosine = sim_item_cosine[item-1]
-                sim_jaccard = sim_item_jaccard[item-1]
-                sim_pearson = sim_item_pearson[item-1]
-                ind = (M[user-1] > 0)
-                #ind[item-1] = False
-                normal_cosine = np.sum(np.absolute(sim_cosine[ind]))
-                normal_jaccard = np.sum(np.absolute(sim_jaccard[ind]))
-                normal_pearson = np.sum(np.absolute(sim_pearson[ind]))
-                if normal_cosine > 0:
-                    pred_cosine = np.dot(sim_cosine,M[user-1])/normal_cosine
+    # Use user_based true/false to switch between user-based or item-based collaborative filtering
+    algo = KNNWithMeans(**surprise_kwargs)
+    algo.fit(trainset)
 
-                if normal_jaccard > 0:
-                    pred_jaccard = np.dot(sim_jaccard,M[user-1])/normal_jaccard
+    # run the trained model against the testset
+    test_pred = algo.test(testset)
+    # run the trained model against the trainst
+    train_pred = algo.test(trainset.build_testset())
 
-                if normal_pearson > 0:
-                    pred_pearson = np.dot(sim_pearson,M[user-1])/normal_pearson
+    # get RMSE
+    if verbose:
+        rmse_test = accuracy.rmse(test_pred)
+        print(f"Item-based Model : Test Set - {rmse_test}")
 
-            if pred_cosine < 0:
-                pred_cosine = 0
+        rmse_train = accuracy.rmse(train_pred)
+        print(f"Item-based Model : Training Set - {rmse_train}")
 
-            if pred_cosine > 5:
-                pred_cosine = 5
+    return test_pred + train_pred
 
-            if pred_jaccard < 0:
-                pred_jaccard = 0
 
-            if pred_jaccard > 5:
-                pred_jaccard = 5
+def load_baseline_cf(
+    from_pickle: bool = True,
+    drop_pickle: bool = False,
+    pickle_file_name: str = None,
+    df: pd.DataFrame = None,
+    **kwargs,
+):
+    """
+    Loads the Baseline CF Matrix from a pickle file or recalculates it.
+    Args:
+        from_pickle (bool): Defines whether the baseline CF Matrix should be loaded from the
+                            pickle file or will be recalculated,
 
-            if pred_pearson < 0:
-                pred_pearson = 0
+        drop_pickle (bool): If True then drop the current pickle file,
 
-            if pred_pearson > 5:
-                pred_pearson = 5
+        pickle_file_name (None or str): If given then load pickle from this path name. Otherwise load from
+                                        BASELINE_CF_PICKLE_FILE_NAME.
+        df: (None or pandas.DataFrame): Needs to be passed when the baseline CF Matrix will be recalculated.
+        **kwargs (dict): Dynamic dictionary with the initialization values of the 'calculate_baseline_cf'
+                         function, in case of Baseline CF recalculation.
 
-            # print(f"{user}  {item} {e[2]} {pred_cosine} {pred_jaccard} {pred_pearson}")
-            pred_rate_cosine.append(pred_cosine)
-            pred_rate_jaccard.append(pred_jaccard)
-            pred_rate_pearson.append(pred_pearson)
+    Returns (pandas.DataFrame): A dataframe with the User - Item - Estimated Rating values.
 
-        rmse_cosine.append(sqrt(mean_squared_error(true_rate, pred_rate_cosine)))
-        rmse_jaccard.append(sqrt(mean_squared_error(true_rate, pred_rate_jaccard)))
-        rmse_pearson.append(sqrt(mean_squared_error(true_rate, pred_rate_pearson)))
+    """
 
-        print(f"{sqrt(mean_squared_error(true_rate, pred_rate_cosine))}"
-              f"{sqrt(mean_squared_error(true_rate, pred_rate_jaccard))}"
-              f"{sqrt(mean_squared_error(true_rate, pred_rate_pearson))}")
+    def recalculate_baseline_cf():
+        assert df is not None, "A DataFrame must be provided, in order to calculate the baseline CF Matrix."
+        predictions = calculate_baseline_cf(df=df, **kwargs)
+        return construct_cf_matrix(predictions)
 
-    rmse_cosine = sum(rmse_cosine) / float(len(rmse_cosine))
-    rmse_pearson = sum(rmse_pearson) / float(len(rmse_pearson))
-    rmse_jaccard = sum(rmse_jaccard) / float(len(rmse_jaccard))
+    filepath = pickle_file_name or BASELINE_CF_PICKLE_FILE_NAME
 
-    print(f"{rmse_cosine} {rmse_jaccard} {rmse_pearson}")
+    if drop_pickle:
+        try:
+            os.remove(filepath)
+        except FileNotFoundError as e:
+            print(e)
 
-    f_rmse = open("rmse_item.txt", "w")
-    f_rmse.write(f" rmse_cosine: {rmse_cosine}\n rmse_jaccard:{rmse_jaccard}\n rmse_pearson: {rmse_pearson}")
+    if from_pickle:
+        try:
+            baseline_df = pd.read_pickle(filepath)
+        except FileNotFoundError as e:
+            baseline_df = recalculate_baseline_cf()
+            baseline_df.to_pickle(filepath)
+    else:
+        baseline_df = recalculate_baseline_cf()
 
-    rmse = [rmse_cosine, rmse_jaccard, rmse_pearson]
-    req_sim = rmse.index(min(rmse))
-
-    f_rmse.write(str(req_sim))
-    f_rmse.close()
-
-    sim_mat_item = None
-    if req_sim == 0:
-        sim_mat_item = sim_item_cosine
-
-    if req_sim == 1:
-        sim_mat_item = sim_item_jaccard
-
-    if req_sim == 2:
-        sim_mat_item = sim_item_pearson
-
-    return Mat, sim_mat_item
+    return baseline_df

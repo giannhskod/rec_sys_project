@@ -1,0 +1,19 @@
+Problem A.
+1. Export to dataframe the predictions
+2. Create a dataframe with index categories and columns the items (one hot)
+3. Step 4 from question A is already in surprise package
+4. Step 5 and 6 we will see at the end
+
+Problem B.
+1. Create similarity (surprise)
+   Similarity between one movie and movies which user has rated
+2. Create Popularity (users who rated A/ users who rated generally)
+3. Serendipity index both ways
+4. Solve maximization problem x integer and x continuous for d=0 (without dissimilarity) 
+   [check:pymprog library]
+5. Find dissimilarity (1-similarity)
+6. Step 4 with dissimilarity (d!=0)
+
+
+- Report A and B (10-15 slides)
+- Recommender systems and reinforcement learning
