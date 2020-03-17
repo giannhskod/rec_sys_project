@@ -1,25 +1,15 @@
+import itertools
 import os
+import random
 
 import pandas as pd
-from sklearn.metrics import pairwise_distances
+import numpy as np
+from sklearn.metrics import pairwise_distances, pairwise
 
 from definitions import DATA_DIR
 
 RATINGS_DATASET_PATH = os.path.join(DATA_DIR, "ratings.csv")
 
-def get_items_of_category(category = -1, categorized_movies : pd.DataFrame = None):
-    return categorized_movies[categorized_movies['Category'] == category]['Movie Id'].values
-
-def get_suggestion_for_user(user = -1,movies: pd.DataFrame = None, L = 0):
-    return movies.loc[user].sort_values(0,ascending = False).head(L)
-
-def get_suggestion_for_all_users(movies: pd.DataFrame = None, L = 0):
-    users = movies.index.unique()
-    suggestions = dict()
-    for user in users:
-        suggestion = get_suggestion_for_user(user, movies, L)
-        suggestions.update( {user : suggestion} )
-    return suggestions
 
 class MovieLensRatingsDataset(object):
     """
@@ -95,6 +85,55 @@ class MovieLensRatingsDataset(object):
 
         return self.df
 
+    def common_items_similarity(self, sim_method: str = "cosine"):
+        """
+
+        Args:
+            sim_method:
+
+        Returns:
+
+        """
+        col_dim = self.pivot_df.shape[1]
+        similarity_pairs = []
+
+        for elem1, elem2 in itertools.combinations(self.pivot_df.items(), 2):
+            # This array would have all the indexes
+            # of both elem1 and elem2 of the nonzero values
+            elem1_val = elem1[1]
+            elem1_idx = elem1[0]
+            elem2_val = elem1[1]
+            elem2_idx = elem2[0]
+
+            common_choices = np.vstack((elem1_val, elem2_val)).T.nonzero()[0]
+            common_indexes = [
+                common_choices[i]
+                for i in range(0, len(common_choices) - 1)
+                if i + 1 < len(common_choices)
+                and common_choices[i] == common_choices[i + 1]
+            ]
+
+            if sim_method == "cosine":
+                import ipdb
+                ipdb.set_trace()
+                sim_val = pairwise.cosine_similarity(
+                    np.vstack((elem1_val.iloc[common_indexes], elem2_val.iloc[common_indexes]))
+                )
+                similarity_pairs += [
+                    (
+                        {"elem1": elem1_idx, "elem2": elem2_idx, "value": sim_val},
+                        {"elem1": elem2_idx, "elem2": elem1_idx, "value": sim_val},
+                    )
+                ]
+
+        sim_df = pd.DataFrame(similarity_pairs)
+        pivot_sim_df = sim_df.pivot(
+            index="elem1", columns="elem2", values="rating"
+        ).fillna(0)
+        np.fill_diagonal(pivot_sim_df.values, 1.00)
+
+        return pivot_sim_df
+
     @property
     def jaccard_similarity(self):
         if not hasattr(self, "_jaccard_sim"):
@@ -148,3 +187,80 @@ class MovieLensRatingsDataset(object):
             )
 
         return self._hamming_sim
+
+
+class CategoriesDataset(object):
+    """
+
+    """
+
+    def __init__(
+        self,
+        items_ids: (np.ndarray, list, set),
+        c: int = 5,
+        shuffle: bool = True,
+        **kwargs,
+    ):
+
+        assert isinstance(
+            items_ids, (np.ndarray, list, set)
+        ), "Argument 'items_ids' should be one of the following types (np.ndarray, list, set)"
+        self.items_ids = items_ids
+        self.num_c = c
+        self.shuffle = shuffle
+
+        self.categories_df = self.generate_categories_matrix()
+
+    def generate_categories_matrix(self, refresh: bool = False):
+        if self.shuffle:
+            random.shuffle(self.items_ids)
+
+        categories = np.random.randint(low=1, high=self.num_c, size=len(self.items_ids))
+        if not hasattr(self, "categories_df") or refresh:
+            self.categories_df = pd.DataFrame(
+                {
+                    "movieId": self.items_ids[:],
+                    "category": categories[:],
+                    "value": np.ones(len(self.items_ids)),
+                }
+            )
+        return self.categories_df
+
+    @property
+    def pivot_categories(self):
+        if not hasattr(self, "_pivot_df"):
+            self._pivot_df = (
+                self.categories_df.pivot(
+                    index="category", columns="movieId", values="value"
+                )
+                .fillna(0)
+                .astype(int)
+            )
+        return self._pivot_df
+
+
+class BaselineRSDataset(object):
+    """
+
+    """
+
+    def __init__(self, df: pd.DataFrame, l: int = 5, **kwargs):
+        self.baseline_rs = df
+        self.suggestion_num = l
+
+    def _get_user_suggestion_list(self, user_id):
+
+        return (
+            self.baseline_rs.loc[user_id]
+            .sort_values(0, ascending=False)
+            .head(self.suggestion_num)
+        )
+
+    @property
+    def suggestions(self):
+        users = self.baseline_rs.index.unique()
+        if not hasattr(self, "_suggestions"):
+            self._suggestions = {
+                user_id: self._get_user_suggestion_list(user_id) for user_id in users
+            }
+        return self._suggestions
