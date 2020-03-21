@@ -44,6 +44,10 @@ class MovieLensRatingsDataset(object):
         if preprocess_df:
             self.df = self.preprocess_dataframe()
 
+        keep = kwargs.get("keep", 1.00)
+        if keep:
+            self.df = self.as_subset(keep)
+
         self.pivot_df = self.df.pivot(
             index="movieId" if user_based else "userId",
             columns="userId" if user_based else "movieId",
@@ -61,7 +65,32 @@ class MovieLensRatingsDataset(object):
         else:
             self.full_df.columns = ["movieId", "userId", "rating"]
 
+    def as_subset(self, keep: float = 1.00):
+        """
+        Based on the passed 'keep' argument return the relevant (keep*100)% of the dataset.
+        The User-Movie removal will be equal and random.
+        """
+        import random
+
+        assert (
+            0.0 < keep <= 1.00
+        ), "Invalid value of argument 'keep'. It should be 0.0 < 'keep' <= 1.00,"
+
+        users = self.df["userId"].unique().tolist()
+        movies = self.df["movieId"].unique().tolist()
+
+        return self.df[
+            self.df["userId"].isin(random.sample(users, int(len(users) * keep)))
+            & self.df["movieId"].isin(random.sample(movies, int(len(movies) * keep)))
+        ]
+
     def preprocess_dataframe(self, verbose=False):
+        """
+        Method that preprocess the loaded Dataframe. Steps of Preprocessing
+        1. Remove Users that has less than 50 ratings
+        2. Remove Movies that have movie_ratings_counter < mean_ratings_of_all_movies
+        """
+
         if self.drop_tsmpt:
             self.df.drop(columns="timestamp")
 
@@ -115,9 +144,12 @@ class MovieLensRatingsDataset(object):
 
             if sim_method == "cosine":
                 import ipdb
+
                 ipdb.set_trace()
                 sim_val = pairwise.cosine_similarity(
-                    np.vstack((elem1_val.iloc[common_indexes], elem2_val.iloc[common_indexes]))
+                    np.vstack(
+                        (elem1_val.iloc[common_indexes], elem2_val.iloc[common_indexes])
+                    )
                 )
                 similarity_pairs += [
                     (
@@ -212,31 +244,34 @@ class CategoriesDataset(object):
         self.categories_df = self.generate_categories_matrix()
 
     def generate_categories_matrix(self, refresh: bool = False):
+        """
+        TODO: Find better way to represent the categories. Due to optimizer formation
+        inside the categories matrix we are not keeping the itemId but the movie Index.
+        For example if itemId = 114 but it is in the index=5 position of list "items_ids"
+        then the index will be added as value to the category matrix.
+        Args:
+            refresh:
+
+        Returns:
+
+        """
         if self.shuffle:
             random.shuffle(self.items_ids)
 
-        categories = np.random.randint(low=1, high=self.num_c, size=len(self.items_ids))
-        if not hasattr(self, "categories_df") or refresh:
-            self.categories_df = pd.DataFrame(
-                {
-                    "movieId": self.items_ids[:],
-                    "category": categories[:],
-                    "value": np.ones(len(self.items_ids)),
-                }
-            )
-        return self.categories_df
+        categories = np.random.randint(
+            low=1, high=self.num_c + 1, size=len(self.items_ids)
+        )
+        _, counts = np.unique(categories, return_counts=True)
+        categories_df = pd.DataFrame(
+            0, index=np.arange(self.num_c), columns=np.arange(max(counts))
+        )
 
-    @property
-    def pivot_categories(self):
-        if not hasattr(self, "_pivot_df"):
-            self._pivot_df = (
-                self.categories_df.pivot(
-                    index="category", columns="movieId", values="value"
-                )
-                .fillna(0)
-                .astype(int)
-            )
-        return self._pivot_df
+        zero_idxs = np.zeros(self.num_c)
+        for idx, category_id in enumerate(categories):
+            categories_df.iloc[category_id - 1, int(zero_idxs[category_id - 1])] = idx
+            zero_idxs[category_id - 1] += 1
+
+        return categories_df
 
 
 class BaselineRSDataset(object):
