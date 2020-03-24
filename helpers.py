@@ -39,13 +39,17 @@ class MovieLensRatingsDataset(object):
         """
 
         self.drop_tsmpt = kwargs.get("drop_timestamp", True)
-        self.df = df if df else pd.read_csv(df_path_name or RATINGS_DATASET_PATH)
+        self.df = (
+            df
+            if not (df is None or df.empty)
+            else pd.read_csv(df_path_name or RATINGS_DATASET_PATH)
+        )
 
         if preprocess_df:
             self.df = self.preprocess_dataframe()
 
         keep = kwargs.get("keep", 1.00)
-        if keep:
+        if keep < 1.00:
             self.df = self.as_subset(keep)
 
         self.pivot_df = self.df.pivot(
@@ -54,11 +58,11 @@ class MovieLensRatingsDataset(object):
             values="rating",
         ).fillna(0)
 
-        # Create User x Movies DataFrame from the pivoted DataFrame
+        # Create UsGurobiDirecter x Movies DataFrame from the pivoted DataFrame
         # It can be used for the Baseline CF matrix calculation
         pivot_df_cp = self.pivot_df.copy(deep=True)
         self.full_df = pivot_df_cp.unstack(
-            "userId" if user_based else "movieId"
+            "movieId" if user_based else "userId"
         ).reset_index()
         if user_based:
             self.full_df.columns = ["userId", "movieId", "rating"]
@@ -223,7 +227,8 @@ class MovieLensRatingsDataset(object):
 
 class CategoriesDataset(object):
     """
-
+    A class object that creates a categories pd.Dataframe based on specific item_id list.
+    Each category is generated randomly and each item belongs only to one category.
     """
 
     def __init__(
@@ -274,28 +279,62 @@ class CategoriesDataset(object):
         return categories_df
 
 
-class BaselineRSDataset(object):
+class BaselineRIDataset(object):
+    """
+    A class object that filters the Top L items for each row of  a given pd.Dataframe
+    which defines the result of the Collaborative Filtering Algorithm.
     """
 
-    """
+    def __init__(self, df: pd.DataFrame, default_limit: int = 5):
+        self.initial_baseline_rs = df
+        self.default_suggestion_limit = default_limit
 
-    def __init__(self, df: pd.DataFrame, l: int = 5, **kwargs):
-        self.baseline_rs = df
-        self.suggestion_num = l
+        if self.initial_baseline_rs.shape[1] > self.default_suggestion_limit:
+            self.rec_df = self.suggestions()
+        else:
+            self.rec_df = self.initial_baseline_rs
 
-    def _get_user_suggestion_list(self, user_id):
-
+    def _get_user_suggestion_list(self, user_id: int, limit: int = None):
+        """
+        Returns the pd.Series with the Top Limit Movies of a spesic 'user_id'
+        Args:
+            user_id (int): A valid index value of the dataframe
+            limit (int or None): If given it defines the returned limit of the
+        """
+        limit = limit or self.default_suggestion_limit
         return (
-            self.baseline_rs.loc[user_id]
+            self.initial_baseline_rs.loc[user_id]
             .sort_values(0, ascending=False)
-            .head(self.suggestion_num)
+            .head(limit)
         )
 
-    @property
-    def suggestions(self):
-        users = self.baseline_rs.index.unique()
-        if not hasattr(self, "_suggestions"):
-            self._suggestions = {
-                user_id: self._get_user_suggestion_list(user_id) for user_id in users
-            }
-        return self._suggestions
+    def suggestions(self, limit: int = None):
+        """
+        Filters the 'initial_baseline_rs' with the Top l movies with the higher rating values.
+        Args:
+            limit :
+
+        Returns (pd.DataFrame): The formatting is the sane with the 'initial_baseline_rs'
+
+        """
+        limit = limit or self.default_suggestion_limit
+        items_col_name = self.initial_baseline_rs.columns.name
+        user_index_name = self.initial_baseline_rs.index.name
+
+        users = self.initial_baseline_rs.index
+        suggestions = []
+
+        for user in users:
+            limited_movies = self._get_user_suggestion_list(user, limit)
+            for itemId, rating in zip(
+                limited_movies.index.values.tolist(), limited_movies.values.tolist()
+            ):
+                suggestions.append(
+                    {user_index_name: user, items_col_name: itemId, "rating": rating}
+                )
+
+        return (
+            pd.DataFrame(suggestions)
+            .pivot(index=user_index_name, columns=items_col_name, values="rating")
+            .fillna(0)
+        )
