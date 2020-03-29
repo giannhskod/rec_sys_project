@@ -5,6 +5,7 @@ import random
 import pandas as pd
 import numpy as np
 from sklearn.metrics import pairwise_distances, pairwise
+import pyomo.environ as pyo
 
 from definitions import DATA_DIR
 
@@ -80,8 +81,18 @@ class MovieLensRatingsDataset(object):
             0.0 < keep <= 1.00
         ), "Invalid value of argument 'keep'. It should be 0.0 < 'keep' <= 1.00,"
 
-        users = self.df["userId"].unique().tolist()
-        movies = self.df["movieId"].unique().tolist()
+        users = (
+            self.df.groupby("userId")
+            .mean()
+            .sort_values(by=["rating"], ascending=False)
+            .index.values.tolist()
+        )
+        movies = (
+            self.df.groupby("movieId")
+            .mean()
+            .sort_values(by=["rating"], ascending=False)
+            .index.values.tolist()
+        )
 
         return self.df[
             self.df["userId"].isin(random.sample(users, int(len(users) * keep)))
@@ -232,11 +243,7 @@ class CategoriesDataset(object):
     """
 
     def __init__(
-        self,
-        items_ids: (np.ndarray, list, set),
-        c: int = 5,
-        shuffle: bool = True,
-        **kwargs,
+        self, items_ids: (np.ndarray, list, set), c: int = 5, **kwargs,
     ):
 
         assert isinstance(
@@ -244,7 +251,7 @@ class CategoriesDataset(object):
         ), "Argument 'items_ids' should be one of the following types (np.ndarray, list, set)"
         self.items_ids = items_ids
         self.num_c = c
-        self.shuffle = shuffle
+        self.max_c = int(len(items_ids) / self.num_c) + 1
 
         self.categories_df = self.generate_categories_matrix()
 
@@ -260,9 +267,6 @@ class CategoriesDataset(object):
         Returns:
 
         """
-        if self.shuffle:
-            random.shuffle(self.items_ids)
-
         categories = np.random.randint(
             low=1, high=self.num_c + 1, size=len(self.items_ids)
         )
@@ -338,3 +342,58 @@ class BaselineRIDataset(object):
             .pivot(index=user_index_name, columns=items_col_name, values="rating")
             .fillna(0)
         )
+
+
+class ProblemAPredictionsMatrix(object):
+    """
+    Class Helper that takes the initial baseline prediction matrix and the prediction values
+    of the Pyomo Variable and constructs a matrix with UxL domain and as values the recommended
+    movie ids.
+    """
+
+    def __init__(self, bs_matrix: pd.DataFrame, x_var_pred: pyo.Var, L: int):
+        self.bs_mat = bs_matrix
+        self.x_var = x_var_pred
+        self.l = L
+        self.u = self.bs_mat.shape[0]
+        self.i = self.bs_mat.shape[1]
+        self.movie_ids = self.bs_mat.columns
+        self.movies_predictions = self.construct_recommendation_matrix()
+        self.predictions_average = self.calculate_predictions_average()
+
+    def construct_recommendation_matrix(self):
+        movies_predictions = {}
+
+        for u in range(0, self.u):
+            user_idx = self.bs_mat.iloc[u].name
+            start = u * self.i
+            # gets the user recommendation list and transforms
+            # it to (movie_idx, x_pred_val) list of pairs
+
+            u_pred = list(self.x_var.get_values().values())[start : start + self.i]
+            u_pred_idx = [(idx, u_val) for idx, u_val in enumerate(u_pred)]
+            # import ipdb
+            # ipdb.set_trace()
+            # create the L recommendation list for the user
+            x_predictions = sorted(u_pred_idx, key=lambda x: x[1], reverse=True)[
+                : self.l
+            ]
+            movies_predictions.update(
+                {
+                    user_idx: [
+                        self.movie_ids[movie_idx] for movie_idx, _ in x_predictions
+                    ]
+                }
+            )
+
+        return movies_predictions
+
+    def calculate_predictions_average(self):
+        sum_r = 0
+        for u_idx, movies in self.movies_predictions.items():
+            sum_u_r = 0
+            for m_idx in movies:
+                sum_u_r += self.bs_mat.loc[(u_idx, m_idx)]
+            sum_r += sum_u_r
+
+        return sum_r / (self.u * self.l)
