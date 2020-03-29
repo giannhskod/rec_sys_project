@@ -6,6 +6,7 @@ ROOT_DIR = path.dirname(path.abspath(__file__)) # This is your Project Root
 
 DATA_DIR = join(ROOT_DIR, 'data')
 MODELS_DIR = join(ROOT_DIR, 'models')
+RESULTS_DIR = join(ROOT_DIR, "results")
 
 # if the folders don't exist, create them.
 if not exists(DATA_DIR):
