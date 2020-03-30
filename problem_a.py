@@ -88,7 +88,7 @@ def create_pyomo_model(
             for i in cat_i
         )
 
-        return (2 * summations / (len(cat_i) * constant * (constant - 1))) >= model_ins.D
+        return (2 * summations / (constant * (constant - 1))) >= model_ins.D
 
     def maximum_recommendation_constraint(model_ins, u):
         return (
@@ -195,7 +195,7 @@ def test_constraints(
 
     for cat, div_sum in enumerate(diversity_mat):
         cat_len = len([mov for mov in cs_matrix.loc[cat] if mov != 0])
-        div_val = 2 * div_sum / (Kmax * cat_len) * (Kmax * cat_len - 1)
+        div_val = 2 * div_sum / ((Kmax * cat_len) * (Kmax * cat_len - 1))
         if verbose:
             print(f"Category {cat} - Diversity={div_val}")
         if not (div_val > Dmax - 0.005):
